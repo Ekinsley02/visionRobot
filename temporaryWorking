@@ -1,105 +1,330 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider
+#!/usr/bin/env python3
+# pose_builder.py  –  interactive pose → robot_geom.json
 
-# ─────────────── CONSTANTS (metres) ───────────────
-radiusUpper   = 38.0  / 1000
-radiusLower   = 30.0  / 1000
-link1_length  = 31 / 1000        # red
-link2_length  = 104 / 1000       # blue
-bar_length    = 124  / 1000       # orange
-attach_dist   = 48.0  / 1000        # green attaches 48 mm from orange-top
-joint_ratio   = 0.24                # blue joint fraction
+import json, math, importlib, pyglet, pymunk
+from   pymunk import Vec2d
+from   pymunk.pyglet_util import DrawOptions
 
-# ─────────────── FIXED ANCHORS ────────────────────
-motor1_anchor      = np.array([0.0, 0.0])                    # upper motor
-motor2_anchor      = motor1_anchor + np.array([0.0386, -0.0268])  # lower motor
-link2_right_anchor = motor2_anchor + np.array([4.0, 11.3]) / 1000
+# ───────────────── CONSTANTS (metres) ─────────────────
+R_UP, R_LO = 38e-3, 30e-3
+L = dict(red=31e-3, blue=104e-3, orange=124e-3, green=48e-3,
+         crank_up=38e-3, crank_lo=30e-3)
+ATTACH, J_FRAC       = 48e-3, 0.24
+HIP_SP, BODY_W       = 0.180, 0.3048
+TOP_OFF, BOT_OFF     = 0.0319, 0.0258
+FRONT_OFF            = 0.0425
 
-# ─────────────── FIGURE SET-UP ────────────────────
-fig, ax = plt.subplots(figsize=(8, 8))
-plt.subplots_adjust(bottom=0.25)
-ax.set_aspect('equal')
-ax.set_xlim(-0.10, 0.22)           # a bit wider to fit new spacing
-ax.set_ylim(-0.22, 0.15)
-ax.set_title('2-Link System with Motor Swivels')
-ax.axis('off')
+# ───────── FIXED WORLD ANCHORS ─────────
+rear_up  = Vec2d(0, 0)
+rear_lo  = rear_up + (0.0386, -0.0268)
+blue_R   = rear_lo + (0.004,  0.0113)
+front_lo = rear_lo + (HIP_SP, 0.0)
+front_up = front_lo - (rear_lo - rear_up)
+blue_R2  = front_lo + (0.004, 0.0113)
 
-ax.plot(*motor1_anchor, 'ko')
-ax.plot(*motor2_anchor, 'ko')
-ax.plot(*link2_right_anchor, 'mo')
+ANCHORS   = [rear_up, rear_lo, blue_R, front_up, front_lo, blue_R2]
 
-link1_line, = ax.plot([], [], 'r-',  lw=3)          # red
-link2_line, = ax.plot([], [], 'b-',  lw=3)          # blue
-link3_line, = ax.plot([], [], 'g-',  lw=3)          # green
-link4_line, = ax.plot([], [], color='orange', lw=3) # orange
-tip1_marker, = ax.plot([], [], 'go')
-tip2_marker, = ax.plot([], [], 'go')
+# ───────── MOTOR ANGLES (deg) ─────────
+mot = dict(rear_u=0, rear_l=0, front_u=0, front_l=0)
 
-ax_slider1 = plt.axes([0.20, 0.10, 0.65, 0.03])
-ax_slider2 = plt.axes([0.20, 0.05, 0.65, 0.03])
-slider1 = Slider(ax_slider1, 'Motor 1 Angle', 0, 40, valinit=0)
-slider2 = Slider(ax_slider2, 'Motor 2 Angle', 0, 40, valinit=0)
+# ───────── PYMUNK WORLD ─────────
+space = pymunk.Space();  space.gravity = (0,0)
+bars, dots = {}, []                             # runtime visuals
 
-# ─────────────── UPDATE FUNCTION ─────────────────
-def update(_):
-    th1 = np.radians(135 + slider1.val)
-    th2 = np.radians(-45 - slider2.val)
-    tip1 = motor1_anchor + radiusUpper * np.array([np.cos(th1), np.sin(th1)])
-    tip2 = motor2_anchor + radiusLower * np.array([np.cos(th2), np.sin(th2)])
+# -------- colour map ---------------------------------------------------
+LINK_COL = dict(red=(255,0,0,255),
+                blue=(  0,0,255,255),
+                green=(  0,180,0,255),
+                orange=(255,140,0,255),
+                crank_up=(150,150,150,255),
+                crank_lo=(150,150,150,255))
 
-    # ---- red & blue linkage ---------------------------------------
-    r, d = link1_length, link2_length * (1 - joint_ratio)
-    D     = link2_right_anchor - tip1
-    dist  = np.linalg.norm(D)
-    if dist > r + d or dist < abs(r - d) or (dist == 0 and r == d):
+# -------- torso outline (four static segments) -------------------------
+def build_torso_outline():
+    top  = rear_up.y + TOP_OFF
+    bot  = rear_lo.y - BOT_OFF
+    front= front_lo.x + FRONT_OFF
+    rear = front - BODY_W
+    quad = [(rear,bot),(front,bot),(front,top),(rear,top)]
+    for a,b in zip(quad, quad[1:]+quad[:1]):
+        seg = pymunk.Segment(space.static_body, a, b, 0.003)
+        seg.color = (0,0,0,255); space.add(seg)
+build_torso_outline()
+
+# -------- little black dots at fixed anchors ---------------------------
+for p in ANCHORS:
+    dot = pymunk.Circle(space.static_body, 0.003, p)
+    dot.color = (0,0,0,255); space.add(dot); dots.append(dot)
+
+# -------- helper to add / remove bars ----------------------------------
+def add_bar(tag, length, pos, angle):
+    mass=1e-3;  I=mass*length*length/12
+    b = pymunk.Body(mass, I, body_type=pymunk.Body.KINEMATIC)
+    b.position, b.angle = pos, angle
+    colour = LINK_COL.get(tag.split('_')[-1], (0,170,255,255))
+    seg = pymunk.Segment(b,(0,0),(length,0),0.002);  seg.color = colour
+    space.add(b, seg);  bars[tag] = b
+
+def clear_bars():
+    for b in tuple(bars.values()):
+        for s in b.shapes: space.remove(s)
+        space.remove(b)
+    bars.clear()
+
+# -------- 6-bar forward kinematics -------------------------------------
+def leg(up, lo, right, th_u, th_l):
+    t1, t2 = math.radians(135+th_u), math.radians(-45-th_l)
+    tip1 = up + Vec2d(R_UP*math.cos(t1), R_UP*math.sin(t1))
+    tip2 = lo + Vec2d(R_LO*math.cos(t2), R_LO*math.sin(t2))
+
+    r, d = L['red'], L['blue']*(1-J_FRAC)
+    D, dist = right-tip1, (right-tip1).length
+    if not (0 < dist < r+d and dist > abs(r-d)): return None
+    a = (r*r-d*d+dist*dist)/(2*dist)
+    h = math.sqrt(max(0, r*r-a*a))
+    J1 = tip1 + D.normalized()*a - Vec2d(-D.y,D.x).normalized()*h
+    LJ = right - (right-J1)/(1-J_FRAC)
+
+    vec = tip2-LJ; d2 = vec.length
+    if not (0 < d2 < 2*L['orange']): return None
+    mid = LJ + vec*0.5
+    h2  = math.sqrt(max(0, L['orange']**2 - (d2*0.5)**2))
+    perp= Vec2d(-vec.y,vec.x).normalized()*h2
+    OB  = mid-perp if (mid-perp).y < (mid+perp).y else mid+perp
+
+    axis = (OB-LJ).length
+    if axis==0 or ATTACH>axis: return None
+    GS = LJ + (OB-LJ).normalized()*ATTACH
+    return tip1,J1,LJ,OB,tip2,GS
+
+# -------- regenerate bars for current slider pose ----------------------
+def rebuild():
+    clear_bars()
+    kinR = leg(rear_up , rear_lo , blue_R ,  mot['rear_u'],  mot['rear_l'])
+    kinF = leg(front_up, front_lo, blue_R2, mot['front_u'], mot['front_l'])
+    if not (kinR and kinF): return
+
+    def place(tag, kin, anc):
+        tip1,J1,LJ,OB,tip2,_ = kin
+        up,lo,right = anc
+        add_bar(f'{tag}_crank_up' , L['crank_up'], up, math.radians(135+mot[f'{tag}_u']))
+        add_bar(f'{tag}_crank_lo' , L['crank_lo'], lo, math.radians(-45-mot[f'{tag}_l']))
+        add_bar(f'{tag}_red'   , L['red']   , tip1, (J1-tip1).angle)
+        add_bar(f'{tag}_blue'  , L['blue']  , LJ  , (right-LJ).angle)
+        add_bar(f'{tag}_orange', L['orange'], LJ  , (OB-LJ).angle)
+        add_bar(f'{tag}_green' , L['green'] , tip2, (LJ-tip2).angle)
+
+    place('rear' , kinR, (rear_up , rear_lo , blue_R ))
+    place('front', kinF, (front_up, front_lo, blue_R2))
+
+rebuild()
+
+# ───────── Pyglet window setup ─────────
+# ───────── Pyglet window setup ─────────
+win = pyglet.window.Window(900, 560,
+         "Pose-builder  –  drag sliders (1-4 to pick), ←/→ fine,  d = dump)")
+
+# ask for the normal arrow-cursor, but ignore if this pyglet build
+# / back-end doesn’t expose system-cursors
+try:
+    win.set_mouse_cursor(win.get_system_mouse_cursor('arrow'))   # ← was 'default'
+except Exception:
+    pass
+
+
+pyglet.gl.glClearColor(1,1,1,1)
+draw = DrawOptions(); draw.flip_y = True
+draw.transform = pymunk.Transform(a=320,d=320,tx=450,ty=260)
+
+info = pyglet.text.Label("", x=10, y=10,
+                         anchor_x='left', anchor_y='bottom', color=(0,0,0,255))
+def refresh(): info.text = f"angles (deg): {mot}"
+refresh()
+
+# ───────── sliders (minimal) ─────────
+class Slider:
+    BAR_W,BAR_H,KNOB_R = 260,6,8
+    def __init__(self,key,label,y):
+        self.key,self.y=key,y; self.x0=40
+        self.bar  = pyglet.shapes.Rectangle(self.x0,y,self.BAR_W,self.BAR_H,
+                                            color=(210,210,210))
+        self.knob = pyglet.shapes.Circle(0,y+self.BAR_H/2,self.KNOB_R,
+                                         color=(0,0,255))
+        self.lab  = pyglet.text.Label(label,x=self.x0-10,y=y+2,
+                                      anchor_x='right',anchor_y='center',
+                                      color=(0,0,0,255))
+        self.drag=False; self.update()
+    def update(self): self.knob.x=self.x0+mot[self.key]/40*self.BAR_W
+    def draw  (self): self.bar.draw(); self.knob.draw(); self.lab.draw()
+    # mouse handlers
+    def on_mouse_press(self,x,y,btn,mods): self.drag=self._hit(x,y)
+    def on_mouse_release(self, *_):        self.drag=False
+    def on_mouse_drag(self,x,y,dx,dy,btn,mods):
+        if not self.drag: return
+        x=max(self.x0,min(self.x0+self.BAR_W,x))
+        mot[self.key]=round((x-self.x0)/self.BAR_W*40,1)
+        self.update(); rebuild(); refresh()
+    def _hit(self,x,y): return (x-self.knob.x)**2+(y-self.knob.y)**2<self.KNOB_R**2
+
+sliders=[Slider('rear_u','Rear Upper', 60),
+         Slider('rear_l','Rear Lower',110),
+         Slider('front_u','Front Upper',160),
+         Slider('front_l','Front Lower',210)]
+for s in sliders: win.push_handlers(s)
+
+@win.event
+def on_draw():
+    win.clear(); space.debug_draw(draw)
+    for s in sliders: s.draw(); info.draw()
+
+# keyboard helpers
+selected=0
+@win.event
+def on_key_press(sym,_):
+    global selected
+    if pyglet.window.key._1 <= sym <= pyglet.window.key._4:
+        selected = sym - pyglet.window.key._1
+    elif sym in (pyglet.window.key.LEFT, pyglet.window.key.RIGHT):
+        k=list(mot.keys())[selected]
+        mot[k]=max(0,min(40,mot[k]+(1 if sym==pyglet.window.key.RIGHT else -1)))
+        sliders[selected].update(); rebuild(); refresh()
+    elif sym==pyglet.window.key.D: dump_json()
+
+# dump helper -----------------------------------------------------------
+# ───────── dump helper --------------------------------------------------
+def dump_json():
+    # 1) kinematics for both legs ------------------------------------------------
+    kinR = leg(rear_up , rear_lo , blue_R , mot['rear_u'], mot['rear_l'])
+    kinF = leg(front_up, front_lo, blue_R2, mot['front_u'], mot['front_l'])
+    if not (kinR and kinF):
+        print("⚠  current pose is geometrically impossible – nothing saved")
         return
 
-    a = (r**2 - d**2 + dist**2) / (2 * dist)
-    h = np.sqrt(abs(r**2 - a**2))
-    midpoint = tip1 + a * D / dist
-    perp     = np.array([-D[1], D[0]]) / dist
-    joint1   = midpoint - h * perp                      # red/blue hinge
+    # tidy helper ----------------------------------------------------------------
+    tidy = lambda v: round(float(v), 10)
 
-    full_vec   = (link2_right_anchor - joint1) / (1 - joint_ratio)
-    full_vec   = full_vec / np.linalg.norm(full_vec) * link2_length
-    left_joint = link2_right_anchor - full_vec          # orange top
+    def pack_pts(tag, kin):
+        _, J1, LJ, _, _, GS = kin
+        return {f"{tag}_joint1"     : [tidy(J1.x), tidy(J1.y)],
+                f"{tag}_blue_orange": [tidy(LJ.x), tidy(LJ.y)],
+                f"{tag}_green_attach":[tidy(GS.x), tidy(GS.y)]}
 
-    # ---- orange bottom via circle–circle intersection -------------
-    vec_lo = tip2 - left_joint
-    d_lo   = np.linalg.norm(vec_lo)
-    R = bar_length
-    if d_lo == 0 or d_lo > 2 * R:
-        return
-    a2   = d_lo / 2
-    h2   = np.sqrt(R**2 - a2**2)
-    base = left_joint + a2 * vec_lo / d_lo
-    perp2 = np.array([-vec_lo[1], vec_lo[0]]) / d_lo
-    cand1, cand2 = base + h2 * perp2, base - h2 * perp2
-    orange_bottom = cand1 if cand1[1] < cand2[1] else cand2
+    pts = {**pack_pts("rear",  kinR),
+           **pack_pts("front", kinF)}
 
-    # ---- fixed attach point 48 mm down orange ---------------------
-    orange_axis = orange_bottom - left_joint
-    axis_len    = np.linalg.norm(orange_axis)
-    if axis_len == 0 or attach_dist > axis_len:
-        return
-    orange_dir  = orange_axis / axis_len
-    green_start = left_joint + orange_dir * attach_dist
-    green_end   = tip2
+    # 2)  write robot_points.json  -----------------------------------------------
+    with open("robot_points.json", "w") as f:
+        json.dump({
+            "rear" : {k.split('_',1)[1]:v for k,v in pts.items() if k.startswith('rear')},
+            "front": {k.split('_',1)[1]:v for k,v in pts.items() if k.startswith('front')}
+        }, f, indent=2)
+    print("✅  robot_points.json written")
 
-    # ---- draw ------------------------------------------------------
-    link1_line.set_data([tip1[0], joint1[0]], [tip1[1], joint1[1]])
-    link2_line.set_data([left_joint[0], link2_right_anchor[0]],
-                        [left_joint[1], link2_right_anchor[1]])
-    link3_line.set_data([green_start[0], green_end[0]],
-                        [green_start[1], green_end[1]])
-    link4_line.set_data([left_joint[0], orange_bottom[0]],
-                        [left_joint[1], orange_bottom[1]])
-    tip1_marker.set_data([tip1[0]], [tip1[1]])
-    tip2_marker.set_data([tip2[0]], [tip2[1]])
-    fig.canvas.draw_idle()
+    # 3)  build a full robot_geom.json  ------------------------------------------
+    geom = {
+        "link_defaults": {"mass": 0.001},
 
-slider1.on_changed(update)
-slider2.on_changed(update)
-update(None)
-plt.show()
+        "torso": {
+            "size": {"width": BODY_W, "height": TOP_OFF+BOT_OFF},
+            "mass": 2.27,                        # rough guess – edit if needed
+            "inertia_zz": 0.033,
+            "friction": 1.0
+        },
+
+        "fixed_offsets": {
+            "top_offset": TOP_OFF,
+            "bottom_offset": BOT_OFF,
+            "front_offset": FRONT_OFF,
+            "hip_spacing":  HIP_SP
+        },
+
+        # ---------- link catalogue ---------------------------------------------
+        "links": {
+            "rear_crank_upper": {"length": L['crank_up']},
+            "rear_crank_lower": {"length": L['crank_lo']},
+            "rear_red":         {"length": L['red']},
+            "rear_blue":        {"length": L['blue']},
+            "rear_orange":      {"length": L['orange']},
+            "rear_green":       {"length": L['green']},
+
+            "front_crank_upper": {"length": L['crank_up']},
+            "front_crank_lower": {"length": L['crank_lo']},
+            "front_red":         {"length": L['red']},
+            "front_blue":        {"length": L['blue']},
+            "front_orange":      {"length": L['orange']},
+            "front_green":       {"length": L['green']}
+        },
+
+        # ---------- joint list -------------------------------------------------
+        "joints": [
+            # motors (same as before)
+            {"name":"rear_upper_motor",  "parent":"torso","child":"rear_crank_upper",
+             "type":"revolute","anchor":[0,0],"limits":[-3.1416,3.1416],
+             "motor":{"enabled":True,"max_force":1.18},"zero_angle":2.3562},
+
+            {"name":"rear_lower_motor",  "parent":"torso","child":"rear_crank_lower",
+             "type":"revolute","anchor":[0.0386,-0.0268],"limits":[-3.1416,3.1416],
+             "motor":{"enabled":True,"max_force":1.18},"zero_angle":-0.7854},
+
+            {"name":"front_upper_motor", "parent":"torso","child":"front_crank_upper",
+             "type":"revolute","anchor":[HIP_SP,0],"limits":[-3.1416,3.1416],
+             "motor":{"enabled":True,"max_force":1.18},"zero_angle":2.3562},
+
+            {"name":"front_lower_motor", "parent":"torso","child":"front_crank_lower",
+             "type":"revolute","anchor":[HIP_SP+0.0386,-0.0268],
+             "limits":[-3.1416,3.1416],
+             "motor":{"enabled":True,"max_force":1.18},"zero_angle":-0.7854},
+
+            # ---------- rear passive pins -------------------------------------
+            {"parent":"rear_crank_upper","child":"rear_red",
+             "type":"pin","anchor":[-L['crank_up'],0]},
+
+            {"parent":"rear_red","child":"rear_blue",
+             "type":"pin","anchor": pts["rear_joint1"]},
+
+            {"parent":"torso","child":"rear_blue",
+             "type":"pin","anchor": pts["rear_blue_orange"]},
+
+            {"parent":"rear_blue","child":"rear_orange",
+             "type":"pin","anchor": pts["rear_blue_orange"]},
+
+            {"parent":"rear_crank_lower","child":"rear_green",
+             "type":"pin","anchor":[0.0686,-0.0268]},
+
+            {"parent":"rear_orange","child":"rear_green",
+             "type":"pin","anchor": pts["rear_green_attach"]},
+
+            # ---------- front passive pins ------------------------------------
+            {"parent":"front_crank_upper","child":"front_red",
+             "type":"pin","anchor":[HIP_SP-L['crank_up'],0]},
+
+            {"parent":"front_red","child":"front_blue",
+             "type":"pin","anchor": pts["front_joint1"]},
+
+            {"parent":"torso","child":"front_blue",
+             "type":"pin","anchor": pts["front_blue_orange"]},
+
+            {"parent":"front_blue","child":"front_orange",
+             "type":"pin","anchor": pts["front_blue_orange"]},
+
+            {"parent":"front_crank_lower","child":"front_green",
+             "type":"pin","anchor":[HIP_SP+0.0686,-0.0268]},
+
+            {"parent":"front_orange","child":"front_green",
+             "type":"pin","anchor": pts["front_green_attach"]}
+        ],
+
+        # ground (unchanged)
+        "ground": {
+            "segment": [[-2.0,-0.03],[6.0,-0.03]],
+            "thickness": 0.02,
+            "friction": 1.2
+        }
+    }
+
+    with open("robot_geom.json","w") as g:
+        json.dump(geom, g, indent=2)
+    print("✅  robot_geom.json written – launch simulation.py to test!")
+
+
+pyglet.app.run()

@@ -1,0 +1,170 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider
+from matplotlib.patches import Rectangle
+
+# ───────────── CONSTANTS (metres) ──────────────
+radiusUpper   = 38.0  / 1000          # red crank radius
+radiusLower   = 30.0  / 1000          # green crank radius
+link1_length  = 31.0 / 1000           # red link
+link2_length  = 104.0 / 1000          # blue link
+bar_length    = 124.0 / 1000          # orange bar
+attach_dist   = 48.0 / 1000           # green link fixed point on orange
+joint_ratio   = 0.24                  # blue joint fraction (from right end)
+
+# ── body outline rules ─────────────────────────
+BODY_W        = 304.8 / 1000          # 304.8 mm fixed length
+TOP_OFFSET    = 31.9  / 1000          # 31.9 mm above upper motor
+BOTTOM_OFFSET = 25.8  / 1000          # 25.8 mm below lower motor
+FRONT_OFFSET  = 42.5  / 1000          # front-leg lower motor → front edge
+
+# ── inter-hip spacing (rear→front lower motors) ─
+OFFSET_X      = 180.0 / 1000          # 180 mm
+
+# ───────────── ANCHOR POINTS ──────────────
+motor1_A  = np.array([0.0, 0.0])                       # rear-leg upper motor
+motor2_A  = motor1_A + np.array([0.0386, -0.0268])     # rear-leg lower motor
+right_B   = motor2_A + np.array([4.0, 11.3]) / 1000    # rear-leg blue-link right end
+
+motor2_A2 = motor2_A + np.array([OFFSET_X, 0.0])       # front-leg lower motor
+motor1_A2 = motor2_A2 - (motor2_A - motor1_A)          # front-leg upper motor
+right_B2  = motor2_A2 + np.array([4.0, 11.3]) / 1000   # front blue-link right end
+
+# ───────────── FIGURE SET-UP ──────────────
+fig, ax = plt.subplots(figsize=(10, 8))
+plt.subplots_adjust(bottom=0.30)                       # room for four sliders
+ax.set_aspect('equal')
+ax.set_xlim(-0.15, OFFSET_X + 0.35)
+ax.set_ylim(-0.30, 0.15)
+ax.set_title('Two-Leg Simulator with Body Outline')
+ax.axis('off')
+
+# ── body outline rectangle (border only) ──
+body_patch = Rectangle((0, 0), 0, 0, facecolor='none',
+                       edgecolor='black', linewidth=2, zorder=0)
+ax.add_patch(body_patch)
+
+# ── anchor dots (black) ──
+for p in (motor1_A, motor2_A, right_B, motor1_A2, motor2_A2, right_B2):
+    ax.plot(*p, 'ko')
+
+# ── rear-leg artists ──
+l1,  = ax.plot([], [], 'r-',  lw=3)    # red
+l2,  = ax.plot([], [], 'b-',  lw=3)    # blue
+l3,  = ax.plot([], [], 'g-',  lw=3)    # green
+l4,  = ax.plot([], [], color='orange', lw=3)           # orange
+tip1, = ax.plot([], [], 'go')
+tip2, = ax.plot([], [], 'go')
+
+# ── front-leg artists (dashed) ──
+l1b,  = ax.plot([], [], 'r--',  lw=3)
+l2b,  = ax.plot([], [], 'b--',  lw=3)
+l3b,  = ax.plot([], [], 'g--',  lw=3)
+l4b,  = ax.plot([], [], color='orange', ls='--', lw=3)
+tip1b,= ax.plot([], [], 'go')
+tip2b,= ax.plot([], [], 'go')
+
+# ───────────── SLIDERS ──────────────
+# rear leg sliders
+ax_s1  = plt.axes([0.15, 0.20, 0.65, 0.03])
+ax_s2  = plt.axes([0.15, 0.15, 0.65, 0.03])
+s1  = Slider(ax_s1,  'Rear M1°', 0, 40, valinit=0)
+s2  = Slider(ax_s2,  'Rear M2°', 0, 40, valinit=0)
+# front leg sliders
+ax_s1b = plt.axes([0.15, 0.10, 0.65, 0.03])
+ax_s2b = plt.axes([0.15, 0.05, 0.65, 0.03])
+s1b = Slider(ax_s1b, 'Front M1°', 0, 40, valinit=0)
+s2b = Slider(ax_s2b, 'Front M2°', 0, 40, valinit=0)
+
+# ───────────── KINEMATICS SOLVER ──────────────
+def solve_leg(m1, m2, right_anchor, th1_deg, th2_deg):
+    """Return (tip1, joint1, left_joint, orange_bottom, tip2, green_start)."""
+    t1 = np.radians(135 + th1_deg)          # empirical crank zero
+    t2 = np.radians(-45 - th2_deg)
+    tip1 = m1 + radiusUpper * np.array([np.cos(t1), np.sin(t1)])
+    tip2 = m2 + radiusLower * np.array([np.cos(t2), np.sin(t2)])
+
+    # red & blue linkage
+    r, d = link1_length, link2_length * (1 - joint_ratio)
+    D = right_anchor - tip1
+    dist = np.linalg.norm(D)
+    if dist > r + d or dist < abs(r - d) or (dist == 0 and r == d):
+        return None
+    a = (r**2 - d**2 + dist**2) / (2 * dist)
+    h = np.sqrt(abs(r**2 - a**2))
+    midpoint = tip1 + a * D / dist
+    perp = np.array([-D[1], D[0]]) / dist
+    joint1 = midpoint - h * perp
+
+    full_vec = (right_anchor - joint1) / (1 - joint_ratio)
+    full_vec = full_vec / np.linalg.norm(full_vec) * link2_length
+    left_joint = right_anchor - full_vec
+
+    # orange bar bottom via circle–circle
+    vec_lo = tip2 - left_joint
+    d_lo = np.linalg.norm(vec_lo)
+    if d_lo == 0 or d_lo > 2 * bar_length:
+        return None
+    a2 = d_lo / 2
+    h2 = np.sqrt(bar_length**2 - a2**2)
+    base = left_joint + a2 * vec_lo / d_lo
+    perp2 = np.array([-vec_lo[1], vec_lo[0]]) / d_lo
+    cand1, cand2 = base + h2 * perp2, base - h2 * perp2
+    orange_bottom = cand1 if cand1[1] < cand2[1] else cand2
+
+    # green link start (fixed offset on orange)
+    axis_len = np.linalg.norm(orange_bottom - left_joint)
+    if axis_len == 0 or attach_dist > axis_len:
+        return None
+    dir_orange = (orange_bottom - left_joint) / axis_len
+    green_start = left_joint + dir_orange * attach_dist
+
+    return tip1, joint1, left_joint, orange_bottom, tip2, green_start
+
+# ───────────── DRAW HELPERS ──────────────
+def draw_leg(artists, points, right_anchor):
+    l1_, l2_, l3_, l4_, tipA_, tipB_ = artists
+    tipA, J1, LJ, OB, tipB, GS = points
+    l1_.set_data([tipA[0], J1[0]], [tipA[1], J1[1]])
+    l2_.set_data([LJ[0], right_anchor[0]], [LJ[1], right_anchor[1]])
+    l3_.set_data([GS[0], tipB[0]], [GS[1], tipB[1]])
+    l4_.set_data([LJ[0], OB[0]],  [LJ[1], OB[1]])
+    tipA_.set_data([tipA[0]], [tipA[1]])
+    tipB_.set_data([tipB[0]], [tipB[1]])
+
+# ───────────── UPDATE FUNCTION ──────────────
+def update(_):
+    # ── body outline ──
+    body_top    = motor1_A[1] + TOP_OFFSET
+    body_bottom = motor2_A[1] - BOTTOM_OFFSET
+    body_h      = body_top - body_bottom
+
+    front_edge  = motor2_A2[0] + FRONT_OFFSET      # right/front edge
+    rear_edge   = front_edge - BODY_W              # left/rear edge
+    body_patch.set_xy((rear_edge, body_bottom))
+    body_patch.set_width(BODY_W)
+    body_patch.set_height(body_h)
+
+    # ── rear leg ──
+    pts = solve_leg(motor1_A, motor2_A, right_B, s1.val, s2.val)
+    if pts:
+        draw_leg((l1,l2,l3,l4,tip1,tip2), pts, right_B)
+
+    # ── front leg ──
+    pts2 = solve_leg(motor1_A2, motor2_A2, right_B2, s1b.val, s2b.val)
+    if pts2:
+        draw_leg((l1b,l2b,l3b,l4b,tip1b,tip2b), pts2, right_B2)
+
+    fig.canvas.draw_idle()
+
+for slider in (s1, s2, s1b, s2b):
+    slider.on_changed(update)
+
+update(None)
+plt.show()
+
+
+if __name__ == "__main__":
+    params = np.load("best_params.npy")
+    print("Replaying best:", params)
+    rollout(params)           # add render=True in rollout to see live text, or draw

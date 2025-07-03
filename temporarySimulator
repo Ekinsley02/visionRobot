@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+# simulator.py — rigid joints, shapes only
+
+import json, math, pymunk, pyglet
+from   pymunk import Vec2d
+from   pymunk.pyglet_util import DrawOptions
+
+# ───────── constants ─────────
+DT, SIM_TIME    = 1/240, 10.0
+GRAVITY         = (0, -9.81)
+STALL_TORQUE    = 1.18 * 1.20
+Y_OFFSET        = 0.15
+BLUE, GREY      = (0,90,240,255), (180,180,180,255)
+GROUP           = 12              # collision-filter group for *all* robot parts
+
+def rod_I(m,L): return m*L*L/12.0
+def v(obj):     return Vec2d(*obj)
+
+# ───── read robot spec ─────
+spec           = json.load(open("robot_geom.json"))
+links, joints  = spec["links"], spec["joints"]
+torso_spec     = spec["torso"];  offs = spec["fixed_offsets"]
+
+# quick length dictionaries
+LEN = {n:d["length"] for n,d in links.items()}
+Lred, Lblue, Lorange = (LEN[k] for k in
+                        ("rear_red","rear_blue","rear_orange"))
+
+# pose constants (identical to pose_builder)
+R_UP, R_LO  = 38e-3, 30e-3
+ATTACH, J_F = 48e-3, 0.24
+HIP_SP, TOP, BOT, FRONT = (offs[k] for k in
+                           ("hip_spacing","top_offset",
+                            "bottom_offset","front_offset"))
+
+# ───── pymunk space ─────
+space              = pymunk.Space()
+space.gravity      = GRAVITY
+space.damping      = 0.99
+space.iterations   = 60          # plenty of solver passes
+bodies             = {}
+shape_filter       = pymunk.ShapeFilter(group=GROUP)
+
+# ───── build torso ─────
+tor_w, tor_h   = torso_spec["size"].values()
+rear_up        = Vec2d(0,Y_OFFSET)
+rear_lo        = rear_up + (0.0386,-0.0268)
+front_lo       = rear_lo + (HIP_SP,0)
+front_up       = front_lo - (rear_lo-rear_up)
+front_x        = front_lo.x + FRONT
+rear_x         = front_x - tor_w
+torso_centre   = Vec2d((front_x+rear_x)/2, (rear_up.y+TOP + rear_lo.y-BOT)/2)
+
+torso = pymunk.Body(torso_spec["mass"], torso_spec["inertia_zz"])
+torso.position = torso_centre
+poly  = pymunk.Poly.create_box(torso,(tor_w,tor_h)); poly.color = BLUE
+poly.filter = shape_filter
+space.add(torso, poly);  bodies["torso"] = torso
+
+# ───── ground ─────
+g0,g1 = (v(p) for p in spec["ground"]["segment"])
+ground = pymunk.Segment(space.static_body, g0,g1, spec["ground"]["thickness"])
+ground.color = GREY;  space.add(ground)
+
+# ───── FK helper (pose_builder) ─────
+def leg(up,lo,right,th_u,th_l):
+    t1,t2 = math.radians(135+th_u), math.radians(-45-th_l)
+    tip1  = up + Vec2d(R_UP*math.cos(t1), R_UP*math.sin(t1))
+    tip2  = lo + Vec2d(R_LO*math.cos(t2), R_LO*math.sin(t2))
+    r,d   = Lred, Lblue*(1-J_F)
+    D     = right - tip1;  dist = D.length
+    if not(0<dist<r+d and dist>abs(r-d)): return None
+    a = (r*r-d*d+dist*dist)/(2*dist)
+    h = math.sqrt(max(0,r*r-a*a))
+    J1 = tip1 + D.normalized()*a - Vec2d(-D.y,D.x).normalized()*h
+    LJ = right - (right-J1)/(1-J_F)
+    vec = tip2-LJ
+    if not(0<vec.length<2*Lorange): return None
+    mid = LJ+vec*0.5
+    h2  = math.sqrt(max(0,Lorange**2-(vec.length*0.5)**2))
+    perp= Vec2d(-vec.y,vec.x).normalized()*h2
+    OB  = mid-perp if (mid-perp).y<(mid+perp).y else mid+perp
+    if (OB-LJ).length<ATTACH: return None
+    GS  = LJ + (OB-LJ).normalized()*ATTACH
+    return tip1,J1,LJ,OB,tip2,GS
+
+# zero-angles → slider equivalents
+z = {j["child"]:j["zero_angle"] for j in joints
+     if j["type"]=="revolute" and j["parent"]=="torso"}
+rear_u  = math.degrees(z["rear_crank_upper"])  - 135
+rear_l  = -math.degrees(z["rear_crank_lower"]) - 45
+front_u = math.degrees(z["front_crank_upper"]) - 135
+front_l = -math.degrees(z["front_crank_lower"])- 45
+
+blueR  = rear_lo  + (0.004,0.0113)
+blueF  = front_lo + (0.004,0.0113)
+kinR   = leg(rear_up ,rear_lo ,blueR ,rear_u ,rear_l)
+kinF   = leg(front_up,front_lo,blueF ,front_u,front_l)
+if not(kinR and kinF): raise SystemExit("FK failed")
+
+# ───── bar builder ─────
+def make_bar(name,A,B):
+    axis = B-A;  m = links[name].get("mass",0.02)
+    body = pymunk.Body(m, rod_I(m,axis.length))
+    body.position, body.angle = A, axis.angle
+    seg  = pymunk.Segment(body,(0,0),(axis.length,0),0.002)
+    seg.color = BLUE; seg.friction = 1.0; seg.filter = shape_filter
+    space.add(body,seg); bodies[name]=body
+
+# build bars
+(t1R,J1R,LJR,OBR,t2R,_)=kinR; (t1F,J1F,LJF,OBF,t2F,_)=kinF
+len_up,len_lo = LEN["rear_crank_upper"], LEN["rear_crank_lower"]
+make_bar("rear_crank_upper", rear_up,  rear_up + Vec2d(len_up,0)
+         .rotated(math.radians(135+rear_u)))
+make_bar("rear_crank_lower", rear_lo,  rear_lo + Vec2d(len_lo,0)
+         .rotated(math.radians(-45-rear_l)))
+make_bar("rear_red",t1R,J1R);   make_bar("rear_blue",LJR,blueR)
+make_bar("rear_orange",LJR,OBR);make_bar("rear_green",t2R,LJR)
+make_bar("front_crank_upper", front_up, front_up + Vec2d(len_up,0)
+         .rotated(math.radians(135+front_u)))
+make_bar("front_crank_lower", front_lo, front_lo + Vec2d(len_lo,0)
+         .rotated(math.radians(-45-front_l)))
+make_bar("front_red",t1F,J1F);  make_bar("front_blue",LJF,blueF)
+make_bar("front_orange",LJF,OBF);make_bar("front_green",t2F,LJF)
+
+# ───── joints (pivot = rigid pin) ─────
+def pin(a,b,world_pt):
+    pj = pymunk.PivotJoint(a,b,world_pt)
+    pj.max_force = 8_000        # plenty of strength
+    pj.error_bias = 0           # correct fully each step
+    pj.max_bias  = 0            # no random “bounce”
+    return pj
+
+for jd in joints:
+    a,b = bodies[jd["parent"]], bodies[jd["child"]]
+    W   = v(jd["anchor"]) + Vec2d(0,Y_OFFSET)
+    space.add(pin(a,b,W))
+    if jd["type"]=="revolute":
+        lo,hi = jd.get("limits",[-math.pi,math.pi])
+        rl = pymunk.RotaryLimitJoint(a,b,lo,hi); rl.max_force = 8_000
+        rl.error_bias = 0; rl.max_bias = 0
+        space.add(rl)
+        if jd["motor"]["enabled"]:
+            mot = pymunk.SimpleMotor(a,b,0); mot.max_force = STALL_TORQUE
+            space.add(mot)
+
+# ───── viewer (shapes only) ─────
+win = pyglet.window.Window(820,540,"assembled robot")
+opt = DrawOptions(); opt.flip_y = True
+opt.flags = pymunk.SpaceDebugDrawOptions.DRAW_SHAPES
+opt.transform = pymunk.Transform(a=320,d=320,tx=450,ty=260)
+@win.event
+def on_draw(): win.clear(); space.debug_draw(opt)
+
+# run
+def tick(_): space.step(DT)
+tid = pyglet.clock.schedule_interval(tick,DT)
+pyglet.clock.schedule_once(lambda _:(pyglet.clock.unschedule(tid),win.close()),
+                           SIM_TIME)
+pyglet.app.run()

@@ -1,0 +1,258 @@
+{
+  "link_defaults": {
+    "mass": 0.5
+  },
+  "torso": {
+    "size": {
+      "width": 0.3048,
+      "height": 0.0577
+    },
+    "mass": 2.27,
+    "inertia_zz": 0.033,
+    "friction": 1.0
+  },
+  "fixed_offsets": {
+    "top_offset": 0.0319,
+    "bottom_offset": 0.0258,
+    "front_offset": 0.0425,
+    "hip_spacing": 0.18
+  },
+  "links": {
+    "rear_crank_upper": {
+      "length": 0.038
+    },
+    "rear_crank_lower": {
+      "length": 0.03
+    },
+    "rear_red": {
+      "length": 0.031
+    },
+    "rear_blue": {
+      "length": 0.104
+    },
+    "rear_orange": {
+      "length": 0.124
+    },
+    "rear_green": {
+      "length": 0.048
+    },
+    "front_crank_upper": {
+      "length": 0.038
+    },
+    "front_crank_lower": {
+      "length": 0.03
+    },
+    "front_red": {
+      "length": 0.031
+    },
+    "front_blue": {
+      "length": 0.104
+    },
+    "front_orange": {
+      "length": 0.124
+    },
+    "front_green": {
+      "length": 0.048
+    }
+  },
+  "joints": [
+    {
+      "name": "rear_upper_motor",
+      "parent": "torso",
+      "child": "rear_crank_upper",
+      "type": "revolute",
+      "anchor": [
+        0,
+        0
+      ],
+      "limits": [
+        -3.141592653589793,
+        3.141592653589793
+      ],
+      "motor": {
+        "enabled": true,
+        "max_force": 2.5
+      },
+      "zero_angle": 2.356194490192345
+    },
+    {
+      "name": "rear_lower_motor",
+      "parent": "torso",
+      "child": "rear_crank_lower",
+      "type": "revolute",
+      "anchor": [
+        0.0386,
+        -0.0268
+      ],
+      "limits": [
+        -3.141592653589793,
+        3.141592653589793
+      ],
+      "motor": {
+        "enabled": true,
+        "max_force": 2.5
+      },
+      "zero_angle": -0.7853981633974483
+    },
+    {
+      "name": "front_upper_motor",
+      "parent": "torso",
+      "child": "front_crank_upper",
+      "type": "revolute",
+      "anchor": [
+        0.18,
+        0
+      ],
+      "limits": [
+        -3.141592653589793,
+        3.141592653589793
+      ],
+      "motor": {
+        "enabled": true,
+        "max_force": 2.5
+      },
+      "zero_angle": 2.356194490192345
+    },
+    {
+      "name": "front_lower_motor",
+      "parent": "torso",
+      "child": "front_crank_lower",
+      "type": "revolute",
+      "anchor": [
+        0.2186,
+        -0.0268
+      ],
+      "limits": [
+        -3.141592653589793,
+        3.141592653589793
+      ],
+      "motor": {
+        "enabled": true,
+        "max_force": 2.5
+      },
+      "zero_angle": -0.7853981633974483
+    },
+    {
+      "parent": "rear_crank_upper",
+      "child": "rear_red",
+      "type": "pin",
+      "anchor": [
+        -0.0268700577,
+        0.0268700577
+      ]
+    },
+    {
+      "parent": "rear_red",
+      "child": "rear_blue",
+      "type": "pin",
+      "anchor": [
+        -0.035433077,
+        -0.0029238125
+      ]
+    },
+    {
+      "parent": "torso",
+      "child": "rear_blue",
+      "type": "pin",
+      "anchor": [
+        -0.0600751013,
+        0.0010476151
+      ]
+    },
+    {
+      "parent": "rear_blue",
+      "child": "rear_orange",
+      "type": "pin",
+      "anchor": [
+        -0.0600751013,
+        0.0010476151
+      ]
+    },
+    {
+      "parent": "rear_crank_lower",
+      "child": "rear_green",
+      "type": "pin",
+      "anchor": [
+        0.0598132034,
+        -0.0480132034
+      ]
+    },
+    {
+      "parent": "rear_orange",
+      "child": "rear_green",
+      "type": "pin",
+      "anchor": [
+        -0.0523731967,
+        -0.0463304459
+      ]
+    },
+    {
+      "parent": "front_crank_upper",
+      "child": "front_red",
+      "type": "pin",
+      "anchor": [
+        0.1531299423,
+        0.0268700577
+      ]
+    },
+    {
+      "parent": "front_red",
+      "child": "front_blue",
+      "type": "pin",
+      "anchor": [
+        0.144566923,
+        -0.0029238125
+      ]
+    },
+    {
+      "parent": "torso",
+      "child": "front_blue",
+      "type": "pin",
+      "anchor": [
+        0.1199248987,
+        0.0010476151
+      ]
+    },
+    {
+      "parent": "front_blue",
+      "child": "front_orange",
+      "type": "pin",
+      "anchor": [
+        0.1199248987,
+        0.0010476151
+      ]
+    },
+    {
+      "parent": "front_crank_lower",
+      "child": "front_green",
+      "type": "pin",
+      "anchor": [
+        0.2398132034,
+        -0.0480132034
+      ]
+    },
+    {
+      "parent": "front_orange",
+      "child": "front_green",
+      "type": "pin",
+      "anchor": [
+        0.1276268033,
+        -0.0463304459
+      ]
+    }
+  ],
+  "ground": {
+    "segment": [
+      [
+        -2,
+        -0.03
+      ],
+      [
+        6,
+        -0.03
+      ]
+    ],
+    "thickness": 0.02,
+    "friction": 1.2
+  }
+}
