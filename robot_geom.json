@@ -71,7 +71,7 @@
       ],
       "motor": {
         "enabled": true,
-        "max_force": 2.5
+        "max_force": 4.5
       },
       "zero_angle": 2.356194490192345
     },

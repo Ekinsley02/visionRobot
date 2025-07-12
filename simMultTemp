@@ -17,14 +17,25 @@ import json, math, random, pymunk, pyglet
 from   pymunk import Vec2d
 from   pymunk.pyglet_util import DrawOptions
 
-DT, SIM_TIME   = 1/240, 10.0
+DT, SIM_TIME   = 1/240, 20.0
 GRAVITY        = (0, -9.81)
 STALL_TORQUE   = 1.18 * 1.20
 Y_OFFSET       = 0.12
 BLUE, GREY     = (0,90,240,255), (180,180,180,255)
 GROUP          = 12
 RAND_PERIOD    = 0.5
-RAND_ANGLE_MAX = math.radians(20)
+RAND_ANGLE_MAX = math.radians(40)
+PURPLE     = (140,  0, 140, 255)    # deep purple
+FOOT_R     = 25.2e-3 * 0.5          # radius in metres
+FOOT_MASS  = 0.015                  # ≈ 15 g rubber cap
+FOOT_FRICT = 4.0                    # high friction = sticky
+FOOT_REST  = 0.05                   # low bounce
+# ─ striped ground: alternating colours every 6 in ─
+STRIPE_LEN  = 0.1524   # 6 in  → 0.1524 m  (was 0.3048)
+STRIPE_COLS = [
+    (225,225,225,255),   # very light grey
+    (190,190,190,255),   # mid grey
+]                       # add more tuples if you want a longer cycle
 
 LINK_COL = {
     "red":   (255,0,0,255),
@@ -68,7 +79,16 @@ space.add(torso,poly); bodies["torso"] = torso
 
 # ground
 seg0,seg1 = (v(p) for p in spec["ground"]["segment"])
-space.add(pymunk.Segment(space.static_body,seg0,seg1,spec["ground"]["thickness"]))
+thick      = spec["ground"]["thickness"]   
+start_x, end_x = seg0.x, seg1.x
+x, idx = start_x, 0
+while x < end_x:
+    nxt = min(x + STRIPE_LEN, end_x)
+    seg = pymunk.Segment(space.static_body, (x, seg0.y), (nxt, seg1.y), thick)
+    seg.color = STRIPE_COLS[idx % len(STRIPE_COLS)]
+    space.add(seg)
+    x = nxt; idx += 1
+
 
 # FK helper
 
@@ -90,6 +110,23 @@ def leg(up,lo,right,th_u,th_l):
     if (OB-LJ).length<ATTACH: return None
     GS = LJ + (OB-LJ).normalized()*ATTACH
     return tip1,J1,LJ,OB,tip2,GS
+
+
+def add_rubber_foot(parent_name: str, world_tip: Vec2d):
+    """
+    Add a purple, sticky foot that is rigidly part of the *orange-bar body*.
+    The offset must be expressed in *body-local* coordinates → rotate it back.
+    """
+    parent = bodies[parent_name]
+    # vector from bar origin to tip, then rotate into bar-local frame
+    local = (world_tip - parent.position).rotated(-parent.angle)
+
+    foot = pymunk.Circle(parent, FOOT_R, local)
+    foot.friction    = FOOT_FRICT     # sticky rubber
+    foot.elasticity  = FOOT_REST
+    foot.color       = PURPLE
+    foot.filter      = shape_filter   # same collision group
+    space.add(foot)
 
 # zero pose
 zero = {j["child"]:j["zero_angle"] for j in joints if j["type"]=="revolute" and j["parent"]=="torso"}
@@ -120,6 +157,8 @@ make_bar("front_crank_upper",front_up,front_up+Vec2d(len_up,0).rotated(math.radi
 make_bar("front_crank_lower",front_lo,front_lo+Vec2d(len_lo,0).rotated(math.radians(-45-front_l)))
 make_bar("front_red",t1F,J1F); make_bar("front_blue",LJF,blueF)
 make_bar("front_orange",LJF,OBF); make_bar("front_green",t2F,GSF)
+add_rubber_foot("rear_orange",  OBR)
+add_rubber_foot("front_orange", OBF)
 
 # pins & limits (from JSON) – motors skipped
 
