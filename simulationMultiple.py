@@ -14,7 +14,7 @@ from   pymunk import Vec2d
 from   pymunk.pyglet_util import DrawOptions
 
 # ───────── simulation constants ─────────
-DT, SIM_TIME  = 1/240, 20.0
+DT, SIM_TIME  = 1/240, 40.0
 GRAVITY       = (0, -9.81)
 
 POP_SIZE      = 20
@@ -29,6 +29,17 @@ STRIPE_COLS   = [(230,230,230,255), (160,160,160,255)]
 
 RAND_MAX_RATE = math.radians(60)
 SAVE_FILE     = pathlib.Path("best_genes.json")
+
+# --- best distance save file -------------------------------------------------------
+BEST_FILE      = pathlib.Path("best_dist.json")
+
+
+ELITE              = 3      # genomes copied verbatim each generation
+PARENT_POOL        = 6      # fittest allowed to reproduce
+IMMIGRANT_RATE     = 0.10   # fresh random genes each generation
+SIGMA_START        = 1.2   # initial mutation σ  (rad s-1)
+SIGMA_END          = 0.05   # floor mutation σ     (rad s-1)
+SIGMA_DECAY        = 0.97   # geometric decay per generation
 
 
 
@@ -65,6 +76,23 @@ def random_gene():
     return [[random.uniform(-RAND_MAX_RATE,RAND_MAX_RATE) for _ in range(4)]
             for _ in range(GENE_LEN)]
 
+# --- mutation-schedule & GA helpers --------------------------------
+def mutation_sigma(gen: int) -> float:
+    """Geometric decay from SIGMA_START → SIGMA_END."""
+    return max(SIGMA_END, SIGMA_START * (SIGMA_DECAY ** gen))
+
+def crossover(g1: list, g2: list) -> list:
+    """Uniform crossover – choose each rate from either parent w.p. 0.5."""
+    return [[random.choice((a, b)) for a, b in zip(r1, r2)]
+            for r1, r2 in zip(g1, g2)]
+
+def mutate(gene: list, sigma: float) -> list:
+    """Gaussian-jitter every motor rate, clamped to ±RAND_MAX_RATE."""
+    lo, hi = -RAND_MAX_RATE, RAND_MAX_RATE
+    return [[max(lo, min(rate + random.gauss(0, sigma), hi)) for rate in row]
+            for row in gene]
+
+
 def load_population():
     try:
         pop=json.load(open(SAVE_FILE)) if SAVE_FILE.is_file() else []
@@ -72,9 +100,28 @@ def load_population():
     except Exception:
         pop=[]
     return (pop+[random_gene()]*POP_SIZE)[:POP_SIZE]
+    
 
 def save_population(pop): SAVE_FILE.write_text(json.dumps(pop[:POP_SIZE],indent=1))
 
+def load_best_distance() -> float:
+    try:
+        return float(BEST_FILE.read_text())
+    except Exception:
+        return float("-inf")            # nothing recorded yet
+
+def maybe_save_new_champion(pop: list, champion_fitness: float) -> None:
+    """
+    Save genomes only if the current champion beats the standing record.
+    """
+    best_so_far = load_best_distance()
+    if champion_fitness > best_so_far:
+        SAVE_FILE.write_text(json.dumps(pop[:POP_SIZE], indent=1))
+        BEST_FILE.write_text(str(champion_fitness))
+        print(f"🏅  New record! {champion_fitness:.3f} m  → genomes saved.")
+    else:
+        print(f"↪  No improvement (record {best_so_far:.3f} m) – genomes NOT saved.")
+        
 # ───────── FK helper ─────────
 def leg(up,lo,right,th_u,th_l):
     t1,t2=math.radians(135+th_u),math.radians(-45-th_l)
@@ -286,11 +333,24 @@ if __name__=="__main__":
         print(f"\n=== generation {gen} – best distances (m) ===",
               ", ".join(f"{d:.3f}" for d,_ in scored[:3]))
 
-        new=[r.gene for _,r in scored[:3]]
-        while len(new)<POP_SIZE:
-            base=[row[:] for row in new[0]]
-            r,c=random.randrange(GENE_LEN),random.randrange(4)
-            base[r][c]+=random.gauss(0,0.45)
-            new.append(base)
+        sigma   = mutation_sigma(gen)          # exploration → exploitation
+        elite   = [r.gene for _, r in scored[:ELITE]]
+        nextpop = elite[:]                     # start with exact copies
 
-        genes=new; save_population(genes); gen+=1
+        # offspring via crossover + mutation
+        while len(nextpop) < POP_SIZE * (1 - IMMIGRANT_RATE):
+            # tournament-style parent pick from the PARENT_POOL best
+            p1, p2 = random.sample(scored[:PARENT_POOL], 2)
+            child  = mutate(crossover(p1[1].gene, p2[1].gene), sigma)
+            nextpop.append(child)
+
+        # random immigrants to keep diversity high
+        while len(nextpop) < POP_SIZE:
+            nextpop.append(random_gene())
+
+        print(f"mutation σ = {sigma:.3f} rad s-1")
+
+        genes = nextpop
+        champion_fit = scored[0][0]      # best fitness this generation
+        maybe_save_new_champion(genes, champion_fit)
+        gen += 1

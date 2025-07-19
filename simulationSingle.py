@@ -91,7 +91,6 @@ while x < end_x:
 
 
 # FK helper
-
 def leg(up,lo,right,th_u,th_l):
     t1,t2 = math.radians(135+th_u), math.radians(-45-th_l)
     tip1  = up + Vec2d(R_UP*math.cos(t1), R_UP*math.sin(t1))
