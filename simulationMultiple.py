@@ -30,6 +30,8 @@ STRIPE_COLS   = [(230,230,230,255), (160,160,160,255)]
 RAND_MAX_RATE = math.radians(60)
 SAVE_FILE     = pathlib.Path("best_genes.json")
 
+
+
 # torso colours (20)
 TORSO_COLS=[(255,60,60,255),(60,255,60,255),(60,60,255,255),(255,255,60,255),
             (255,60,255,255),(60,255,255,255),(255,140,60,255),(180,180,180,255),
@@ -288,7 +290,7 @@ if __name__=="__main__":
         while len(new)<POP_SIZE:
             base=[row[:] for row in new[0]]
             r,c=random.randrange(GENE_LEN),random.randrange(4)
-            base[r][c]+=random.gauss(0,0.15)
+            base[r][c]+=random.gauss(0,0.45)
             new.append(base)
 
         genes=new; save_population(genes); gen+=1
